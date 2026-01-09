@@ -3,22 +3,22 @@ pipeline {
 
   options {
     timestamps()
-    ansiColor('xterm')
     disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
+    timeout(time: 30, unit: 'MINUTES')
   }
 
   environment {
     // === GitHub access (PRIVATE) ===
     githubCreds  = credentials('ananda-github-access') // expected: usernamePassword
     APP_NAME     = 'django.nv'
-    GITHUB_REPO  = 'django.nv'           // ganti sesuai repo, tanpa .git
+    GITHUB_REPO  = 'django.nv' // repo name tanpa .git
 
     // === Tag policy (DEFINE TAG YANG BOLEH) ===
-    // Contoh yang di-allow:
+    // contoh allow:
     // - v1.2.3
     // - release-2026.01.09
     // - hotfix-auth-001
-    // Silakan ubah sesuai standar tim kamu.
     TAG_REGEX = '^(v\\d+\\.\\d+\\.\\d+|release-\\d{4}\\.\\d{2}\\.\\d{2}|hotfix-[a-z0-9-]+)$'
 
     // === SonarQube config ===
@@ -30,39 +30,35 @@ pipeline {
 
   stages {
 
-    stage('Resolve Tag & Guard (TAG ONLY)') {
+    stage('Resolve Tag (TAG ONLY)') {
       steps {
         script {
-          // Jenkins (Multibranch) biasanya ngasih TAG_NAME kalau build dari tag
-          def tag = env.TAG_NAME
+          def tag = (env.TAG_NAME ?: '').trim()
 
-          // Fallback: kadang GIT_BRANCH isinya refs/tags/<tag> atau origin/tags/<tag>
-          if (!tag?.trim()) {
-            def gb = env.GIT_BRANCH ?: env.BRANCH_NAME ?: ''
-            // contoh gb: "refs/tags/v1.2.3" atau "origin/tags/v1.2.3"
+          // fallback kalau TAG_NAME kosong
+          if (!tag) {
+            def gb = (env.GIT_BRANCH ?: env.BRANCH_NAME ?: '').trim()
             tag = gb.replaceFirst(/^refs\\/tags\\//, '')
                     .replaceFirst(/^origin\\/tags\\//, '')
+                    .trim()
           }
 
-          tag = tag?.trim()
           env.RESOLVED_TAG = tag ?: ''
 
-          echo "BRANCH_NAME = ${env.BRANCH_NAME}"
-          echo "GIT_BRANCH  = ${env.GIT_BRANCH}"
-          echo "TAG_NAME    = ${env.TAG_NAME}"
-          echo "RESOLVED_TAG= ${env.RESOLVED_TAG}"
+          echo "BRANCH_NAME   = ${env.BRANCH_NAME}"
+          echo "GIT_BRANCH    = ${env.GIT_BRANCH}"
+          echo "TAG_NAME      = ${env.TAG_NAME}"
+          echo "RESOLVED_TAG  = ${env.RESOLVED_TAG}"
 
           if (!env.RESOLVED_TAG) {
-            error("TAG-only pipeline: build ini bukan dari TAG. Bikin TAG di GitHub dulu (misal v1.2.3), baru jalan.")
+            error("TAG-only pipeline: build ini bukan dari TAG. Buat TAG di GitHub dulu (misal v1.2.3).")
           }
 
-          // Enforce tag format
           if (!(env.RESOLVED_TAG ==~ /${env.TAG_REGEX}/)) {
             error("TAG '${env.RESOLVED_TAG}' ditolak. Harus match regex: ${env.TAG_REGEX}")
           }
 
           currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.RESOLVED_TAG}"
-          currentBuild.description = "Tag-based run: ${env.RESOLVED_TAG}"
         }
       }
     }
@@ -70,10 +66,10 @@ pipeline {
     stage('Checkout (TAG)') {
       steps {
         sh '''
-          set -euo pipefail
+          set -e
           rm -rf "$APP_NAME" || true
 
-          echo "▶ Cloning repo..."
+          echo "▶ Clone repo..."
           git clone https://$githubCreds_USR:$githubCreds_PSW@github.com/$githubCreds_USR/$GITHUB_REPO.git "$APP_NAME"
 
           cd "$APP_NAME"
@@ -93,7 +89,7 @@ pipeline {
       steps {
         withSonarQubeEnv("${SONAR_SERVER_NAME}") {
           sh '''
-            set -euo pipefail
+            set -e
             cd "$APP_NAME"
 
             echo "[INFO] Sonar scan for TAG: $RESOLVED_TAG"
@@ -113,10 +109,9 @@ pipeline {
       }
     }
 
-    // === OPTIONAL: kalau mau Quality Gate nahan pipeline ===
-    // Pastikan plugin SonarQube + webhook Sonar ke Jenkins sudah bener
+    // Optional: aktifin kalau Sonar webhook + plugin sudah bener
     stage('Quality Gate (optional)') {
-      when { expression { return true } } // ubah ke false kalau belum siap
+      when { expression { return false } } // ubah ke true kalau mau aktif
       steps {
         timeout(time: 10, unit: 'MINUTES') {
           waitForQualityGate abortPipeline: true
@@ -124,34 +119,13 @@ pipeline {
       }
     }
 
-    // === OPTIONAL: Build / Test / Deploy berdasarkan TAG ===
-    stage('Deploy (placeholder)') {
-      steps {
-        sh '''
-          set -euo pipefail
-          echo "🚀 Deploying TAG: $RESOLVED_TAG"
-          echo "TODO: taro step deploy kamu di sini"
-          # contoh:
-          # docker build -t myapp:$RESOLVED_TAG .
-          # docker push registry/myapp:$RESOLVED_TAG
-          # ssh server "deploy myapp:$RESOLVED_TAG"
-        '''
-      }
-    }
-
   } // end stages
 
   post {
-    success {
-      echo "✅ SUCCESS: TAG ${env.RESOLVED_TAG} scanned & processed"
-    }
-    failure {
-      echo "❌ FAILED: TAG ${env.RESOLVED_TAG} - cek log stage yang error"
-    }
-    aborted {
-      echo "⚠️ ABORTED: TAG ${env.RESOLVED_TAG}"
-    }
-    always {
+    success { echo "✅ SUCCESS: TAG ${env.RESOLVED_TAG}" }
+    failure { echo "❌ FAILED: TAG ${env.RESOLVED_TAG}" }
+    aborted { echo "⚠️ ABORTED: TAG ${env.RESOLVED_TAG}" }
+    always  {
       sh 'echo "Done"'
       cleanWs(deleteDirs: true, disableDeferredWipeout: true)
     }
