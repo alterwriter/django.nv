@@ -1,3 +1,55 @@
+// =====================================================
+// DEMO Jenkinsfile - Discord Webhook (HARDCODE)
+// =====================================================
+
+// ⚠️ DEMO ONLY — webhook boleh dimatiin setelah training
+def DISCORD_WEBHOOK = 'https://discord.com/api/webhooks/1459736436520521788/2SchBPBcOMIbZ9MQC8a7iKLaTxR4w7Q45KaZd0Aq1TWS61E-i68H84kmLvRpC9HHFRKM'
+
+// =========================
+// Discord Notifier (OPS)
+// =========================
+def notifyDiscord(String status) {
+  def tag   = (env.RESOLVED_TAG ?: env.TAG_NAME ?: '-')
+  def envNm = 'Staging'
+  def stage = (env.LAST_STAGE ?: '-')
+  def url   = (env.BUILD_URL ?: '-')
+  def job   = (env.JOB_NAME ?: '-')
+  def build = (env.BUILD_NUMBER ?: '-')
+
+  def color =
+    (status == 'SUCCESS') ? 3066993 :
+    (status == 'FAILED')  ? 15158332 :
+    (status == 'ABORTED') ? 16705372 :
+                            9807270
+
+  def mention = (status == 'FAILED') ? '@here ' : ''
+
+  sh """
+    set -e
+    payload=\$(cat <<'JSON'
+{
+  "content": "${mention}",
+  "embeds": [
+    {
+      "title": "${status} · ${envNm}",
+      "color": ${color},
+      "fields": [
+        { "name": "Service", "value": "${job}", "inline": true },
+        { "name": "Build", "value": "#${build}", "inline": true },
+        { "name": "Version", "value": "${tag}", "inline": true },
+        { "name": "Stage", "value": "${stage}", "inline": true },
+        { "name": "Jenkins URL", "value": "${url}", "inline": false }
+      ],
+      "footer": { "text": "CI/CD Deployment Notification" }
+    }
+  ]
+}
+JSON
+)
+    curl -sS -X POST -H "Content-Type: application/json" --data "\$payload" "${DISCORD_WEBHOOK}" >/dev/null
+  """
+}
+
 pipeline {
   agent any
 
@@ -10,18 +62,14 @@ pipeline {
 
   environment {
     // === GitHub access (PRIVATE) ===
-    githubCreds  = credentials('ananda-github-access') // expected: usernamePassword
+    githubCreds  = credentials('ananda-github-access')
     APP_NAME     = 'django.nv'
-    GITHUB_REPO  = 'django.nv' // repo name tanpa .git
+    GITHUB_REPO  = 'django.nv'
 
-    // === Tag policy (DEFINE TAG YANG BOLEH) ===
-    // contoh allow:
-    // - v1.2.3
-    // - release-2026.01.09
-    // - hotfix-auth-001
+    // === Tag policy ===
     TAG_REGEX = '^(v\\d+\\.\\d+\\.\\d+|release-\\d{4}\\.\\d{2}\\.\\d{2}|hotfix-[a-z0-9-]+)$'
 
-    // === SonarQube config ===
+    // === SonarQube ===
     SONAR_SERVER_NAME   = 'Sonarqube-William'
     SONAR_PROJECT_KEY   = 'github_djangonv'
     SONAR_PROJECT_NAME  = 'github_djangonv'
@@ -32,10 +80,11 @@ pipeline {
 
     stage('Resolve Tag (TAG ONLY)') {
       steps {
+        script { env.LAST_STAGE = env.STAGE_NAME }
+
         script {
           def tag = (env.TAG_NAME ?: '').trim()
 
-          // fallback kalau TAG_NAME kosong
           if (!tag) {
             def gb = (env.GIT_BRANCH ?: env.BRANCH_NAME ?: '').trim()
             tag = gb.replaceFirst(/^refs\\/tags\\//, '')
@@ -45,17 +94,14 @@ pipeline {
 
           env.RESOLVED_TAG = tag ?: ''
 
-          echo "BRANCH_NAME   = ${env.BRANCH_NAME}"
-          echo "GIT_BRANCH    = ${env.GIT_BRANCH}"
-          echo "TAG_NAME      = ${env.TAG_NAME}"
-          echo "RESOLVED_TAG  = ${env.RESOLVED_TAG}"
+          echo "TAG = ${env.RESOLVED_TAG}"
 
           if (!env.RESOLVED_TAG) {
-            error("TAG-only pipeline: build ini bukan dari TAG. Buat TAG di GitHub dulu (misal v1.2.3).")
+            error("TAG-only pipeline. Buat TAG dulu (misal v1.2.3).")
           }
 
           if (!(env.RESOLVED_TAG ==~ /${env.TAG_REGEX}/)) {
-            error("TAG '${env.RESOLVED_TAG}' ditolak. Harus match regex: ${env.TAG_REGEX}")
+            error("TAG '${env.RESOLVED_TAG}' tidak sesuai policy.")
           }
 
           currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.RESOLVED_TAG}"
@@ -65,35 +111,30 @@ pipeline {
 
     stage('Checkout (TAG)') {
       steps {
+        script { env.LAST_STAGE = env.STAGE_NAME }
+
         sh '''
           set -e
           rm -rf "$APP_NAME" || true
 
-          echo "▶ Clone repo..."
           git clone https://$githubCreds_USR:$githubCreds_PSW@github.com/$githubCreds_USR/$GITHUB_REPO.git "$APP_NAME"
-
           cd "$APP_NAME"
-          echo "▶ Fetch tags..."
+
           git fetch --tags --force
-
-          echo "▶ Checkout tag: $RESOLVED_TAG"
           git checkout "tags/$RESOLVED_TAG"
-
-          echo "▶ Current commit:"
           git rev-parse HEAD
         '''
       }
     }
 
-    stage('Sonar - Scan (Docker, TAG version)') {
+    stage('Sonar Scan (Docker)') {
       steps {
+        script { env.LAST_STAGE = env.STAGE_NAME }
+
         withSonarQubeEnv("${SONAR_SERVER_NAME}") {
           sh '''
             set -e
             cd "$APP_NAME"
-
-            echo "[INFO] Sonar scan for TAG: $RESOLVED_TAG"
-            echo "[DEBUG] SONAR_HOST_URL = $SONAR_HOST_URL"
 
             docker run --rm \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
@@ -108,25 +149,22 @@ pipeline {
         }
       }
     }
-
-    // Optional: aktifin kalau Sonar webhook + plugin sudah bener
-    stage('Quality Gate (optional)') {
-      when { expression { return false } } // ubah ke true kalau mau aktif
-      steps {
-        timeout(time: 10, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
-        }
-      }
-    }
-
-  } // end stages
+  }
 
   post {
-    success { echo "✅ SUCCESS: TAG ${env.RESOLVED_TAG}" }
-    failure { echo "❌ FAILED: TAG ${env.RESOLVED_TAG}" }
-    aborted { echo "⚠️ ABORTED: TAG ${env.RESOLVED_TAG}" }
-    always  {
-      sh 'echo "Done"'
+    success {
+      echo "✅ SUCCESS ${env.RESOLVED_TAG}"
+      script { notifyDiscord('SUCCESS') }
+    }
+    failure {
+      echo "❌ FAILED ${env.RESOLVED_TAG}"
+      script { notifyDiscord('FAILED') }
+    }
+    aborted {
+      echo "⚠️ ABORTED ${env.RESOLVED_TAG}"
+      script { notifyDiscord('ABORTED') }
+    }
+    always {
       cleanWs(deleteDirs: true, disableDeferredWipeout: true)
     }
   }
