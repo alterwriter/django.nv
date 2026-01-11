@@ -1,16 +1,24 @@
+import groovy.transform.Field
+
 // =====================================================
 // DEMO Jenkinsfile - Discord Webhook (HARDCODE)
 // =====================================================
 
 // ⚠️ DEMO ONLY — webhook boleh dimatiin setelah training
-def DISCORD_WEBHOOK = 'https://discord.com/api/webhooks/1459736436520521788/2SchBPBcOMIbZ9MQC8a7iKLaTxR4w7Q45KaZd0Aq1TWS61E-i68H84kmLvRpC9HHFRKM'
+@Field String DISCORD_WEBHOOK = 'https://discord.com/api/webhooks/1459736436520521788/2SchBPBcOMIbZ9MQC8a7iKLaTxR4w7Q45KaZd0Aq1TWS61E-i68H84kmLvRpC9HHFRKM'
 
 // =========================
 // Discord Notifier (OPS)
 // =========================
 def notifyDiscord(String status) {
+  // Guard biar gak nge-crash post kalau webhook kosong / typo
+  if (!DISCORD_WEBHOOK?.trim()) {
+    echo "[WARN] DISCORD_WEBHOOK empty, skip notification."
+    return
+  }
+
   def tag   = (env.RESOLVED_TAG ?: env.TAG_NAME ?: '-')
-  def envNm = 'Staging'
+  def envNm = (env.DEPLOY_ENV ?: 'Staging')   // kalau gak ada, fallback Staging
   def stage = (env.LAST_STAGE ?: '-')
   def url   = (env.BUILD_URL ?: '-')
   def job   = (env.JOB_NAME ?: '-')
@@ -22,7 +30,15 @@ def notifyDiscord(String status) {
     (status == 'ABORTED') ? 16705372 :
                             9807270
 
+  // Mention only when FAILED
   def mention = (status == 'FAILED') ? '@here ' : ''
+
+  // Escape minimal biar gak ancur karena karakter aneh
+  def safeJob   = job.replace('"', '\\"')
+  def safeUrl   = url.replace('"', '\\"')
+  def safeTag   = tag.replace('"', '\\"')
+  def safeStage = stage.replace('"', '\\"')
+  def safeEnv   = envNm.replace('"', '\\"')
 
   sh """
     set -e
@@ -31,14 +47,14 @@ def notifyDiscord(String status) {
   "content": "${mention}",
   "embeds": [
     {
-      "title": "${status} · ${envNm}",
+      "title": "${status} · ${safeEnv}",
       "color": ${color},
       "fields": [
-        { "name": "Service", "value": "${job}", "inline": true },
+        { "name": "Service", "value": "${safeJob}", "inline": true },
         { "name": "Build", "value": "#${build}", "inline": true },
-        { "name": "Version", "value": "${tag}", "inline": true },
-        { "name": "Stage", "value": "${stage}", "inline": true },
-        { "name": "Jenkins URL", "value": "${url}", "inline": false }
+        { "name": "Version", "value": "${safeTag}", "inline": true },
+        { "name": "Stage", "value": "${safeStage}", "inline": true },
+        { "name": "Jenkins URL", "value": "${safeUrl}", "inline": false }
       ],
       "footer": { "text": "CI/CD Deployment Notification" }
     }
@@ -61,6 +77,9 @@ pipeline {
   }
 
   environment {
+    // Label env buat notif
+    DEPLOY_ENV = 'Staging'
+
     // === GitHub access (PRIVATE) ===
     githubCreds  = credentials('ananda-github-access')
     APP_NAME     = 'django.nv'
@@ -152,19 +171,19 @@ pipeline {
   }
 
   post {
-    success {
-      echo "✅ SUCCESS ${env.RESOLVED_TAG}"
-      script { notifyDiscord('SUCCESS') }
-    }
-    failure {
-      echo "❌ FAILED ${env.RESOLVED_TAG}"
-      script { notifyDiscord('FAILED') }
-    }
-    aborted {
-      echo "⚠️ ABORTED ${env.RESOLVED_TAG}"
-      script { notifyDiscord('ABORTED') }
-    }
+    // Ini paling aman: selalu kirim notif sekali aja berdasarkan result final
     always {
+      script {
+        def r = (currentBuild.currentResult ?: 'UNKNOWN')
+        def status =
+          (r == 'SUCCESS') ? 'SUCCESS' :
+          (r == 'FAILURE') ? 'FAILED'  :
+          (r == 'ABORTED') ? 'ABORTED' : r
+
+        echo "📣 Notify Discord: ${status} ${env.RESOLVED_TAG ?: ''}"
+        notifyDiscord(status)
+      }
+
       cleanWs(deleteDirs: true, disableDeferredWipeout: true)
     }
   }
