@@ -20,7 +20,7 @@ jobs:
           PANBOX_REPOSITORY_ID: ${{ vars.PANBOX_REPOSITORY_ID }}
           PANBOX_API_KEY: ${{ secrets.PANBOX_API_KEY }}
           PANBOX_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          PANBOX_VERSION: v0.1.0-alpha.6
+          PANBOX_VERSION: v0.1.0-alpha.7
         run: |
           curl -fsSL "https://github.com/alterwriter/PANBOX/releases/download/${PANBOX_VERSION}/install-agent.sh" -o "$RUNNER_TEMP/install-panbox-agent.sh"
           sh "$RUNNER_TEMP/install-panbox-agent.sh" "$PANBOX_VERSION" "$RUNNER_TEMP/panbox-bin"
